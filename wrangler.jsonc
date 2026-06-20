@@ -16,8 +16,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "forum",
-      "database_id": "5be50c70-61cd-445a-a68c-22b459ee9491"
+      "database_name": "king-db",
+      "database_id": "4314a9ec-3979-4ca8-b701-08116949484c"
     }
   ]
 }
