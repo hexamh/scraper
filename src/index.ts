@@ -1,6 +1,6 @@
-import { Bot, webhookCallback } from 'grammy';
+// src/index.ts
+import { Bot, webhookCallback, InputFile } from 'grammy';
 
-// Cloudflare Worker Environment Bindings
 export interface Env {
 	DB: D1Database;
 	TELEGRAM_BOT_TOKEN: string;
@@ -23,16 +23,18 @@ export default {
 			}
 		};
 
-		bot.command('start', (ctx) => {
-			ctx.reply('AI Data Scraper Bot-এ স্বাগতম! \nব্যবহারবিধি:\n/crawl <URL> - ক্রল শুরু করতে\n/status <JOB_ID> - ডেটা সংগ্রহ করতে');
+		bot.command('start', async (ctx) => {
+			await ctx.reply('AI Data Scraper Bot-এ স্বাগতম! \nব্যবহারবিধি:\n/crawl <URL> - ক্রল শুরু করতে\n/status <JOB_ID> - ডেটা সংগ্রহ করতে');
 		});
 
-		// Command: Initiate Crawl
 		bot.command('crawl', async (ctx) => {
 			const url = ctx.match;
+			const chatId = ctx.chat?.id;
+
 			if (!url || !isValidUrl(url)) {
-				return ctx.reply('⚠️ অনুগ্রহ করে একটি সঠিক URL প্রদান করুন। উদাহরণ: /crawl https://example.com/docs');
+				return await ctx.reply('⚠️ অনুগ্রহ করে একটি সঠিক URL প্রদান করুন। উদাহরণ: /crawl https://example.com/docs');
 			}
+			if (!chatId) return;
 
 			try {
 				// Cloudflare Browser Rendering API Call for AI purposes
@@ -46,7 +48,7 @@ export default {
 						url: url,
 						limit: 50,
 						depth: 2,
-						formats: ["markdown"], // AI/RAG এর জন্য অপ্টিমাইজড
+						formats: ["markdown"],
 						crawlPurposes: ["ai-input", "ai-train", "search"],
 						options: {
 							includeExternalLinks: false
@@ -57,7 +59,7 @@ export default {
 				const result: any = await cfResponse.json();
 
 				if (!result.success) {
-					return ctx.reply(`❌ ক্রল শুরু করতে ব্যর্থ হয়েছে: ${JSON.stringify(result.errors)}`);
+					return await ctx.reply(`❌ ক্রল শুরু করতে ব্যর্থ হয়েছে: ${JSON.stringify(result.errors)}`);
 				}
 
 				const jobId = result.result;
@@ -65,20 +67,20 @@ export default {
 				// Store Job in D1 (Parameterized query to prevent SQLi)
 				await env.DB.prepare(
 					'INSERT INTO crawl_jobs (job_id, url, chat_id, status) VALUES (?, ?, ?, ?)'
-				).bind(jobId, url, ctx.chat.id, 'queued').run();
+				).bind(jobId, url, chatId, 'queued').run();
 
-				ctx.reply(`✅ ক্রল শুরু হয়েছে!\nJob ID: \`${jobId}\`\n\nকিছুক্ষণ পর স্ট্যাটাস দেখতে টাইপ করুন:\n/status ${jobId}`, { parse_mode: 'Markdown' });
+				// Use HTML instead of MarkdownV2 to prevent API crashes on unescaped UUID hyphens
+				await ctx.reply(`✅ ক্রল শুরু হয়েছে!\nJob ID: <code>${jobId}</code>\n\nকিছুক্ষণ পর স্ট্যাটাস দেখতে টাইপ করুন:\n/status ${jobId}\n(অথবা বট স্বয়ংক্রিয়ভাবে কাজ শেষে আপনাকে জানাবে)`, { parse_mode: 'HTML' });
 
 			} catch (error) {
-				ctx.reply('⚠️ ইন্টারনাল সার্ভার এরর দেখা দিয়েছে।');
+				await ctx.reply('⚠️ ইন্টারনাল সার্ভার এরর দেখা দিয়েছে।');
 			}
 		});
 
-		// Command: Check Status & Retrieve Data
 		bot.command('status', async (ctx) => {
 			const jobId = ctx.match?.trim();
 			if (!jobId) {
-				return ctx.reply('⚠️ অনুগ্রহ করে Job ID দিন। উদাহরণ: /status <job_id>');
+				return await ctx.reply('⚠️ অনুগ্রহ করে Job ID দিন। উদাহরণ: /status <job_id>');
 			}
 
 			try {
@@ -92,7 +94,7 @@ export default {
 				const result: any = await cfResponse.json();
 
 				if (!result.success) {
-					return ctx.reply('❌ Job ID খুঁজে পাওয়া যায়নি বা API এরর।');
+					return await ctx.reply('❌ Job ID খুঁজে পাওয়া যায়নি বা API এরর।');
 				}
 
 				const jobStatus = result.result.status;
@@ -103,7 +105,7 @@ export default {
 				).bind(jobStatus, jobId).run();
 
 				if (jobStatus !== 'completed') {
-					return ctx.reply(`⏳ বর্তমান স্ট্যাটাস: *${jobStatus.toUpperCase()}*\nঅনুগ্রহ করে আরও কিছুক্ষণ অপেক্ষা করুন।`, { parse_mode: 'Markdown' });
+					return await ctx.reply(`⏳ বর্তমান স্ট্যাটাস: <b>${jobStatus.toUpperCase()}</b>\nঅনুগ্রহ করে আরও কিছুক্ষণ অপেক্ষা করুন।`, { parse_mode: 'HTML' });
 				}
 
 				// If completed, aggregate markdown records
@@ -117,10 +119,9 @@ export default {
 				});
 
 				if (!aggregatedMarkdown) {
-					return ctx.reply('⚠️ ক্রল সম্পন্ন হয়েছে কিন্তু কোনো কন্টেন্ট এক্সট্রাক্ট করা যায়নি।');
+					return await ctx.reply('⚠️ ক্রল সম্পন্ন হয়েছে কিন্তু কোনো কন্টেন্ট এক্সট্রাক্ট করা যায়নি।');
 				}
 
-				// Since Telegram message length limit is 4096, send as a Document file
 				const fileBuffer = new TextEncoder().encode(aggregatedMarkdown);
 				
 				await ctx.replyWithDocument(
@@ -129,14 +130,12 @@ export default {
 				);
 
 			} catch (error) {
-				ctx.reply('⚠️ স্ট্যাটাস চেক করার সময় এরর হয়েছে।');
+				await ctx.reply('⚠️ স্ট্যাটাস চেক করার সময় এরর হয়েছে।');
 			}
 		});
 
-		// Webhook Handler
 		const handleWebhook = webhookCallback(bot, 'cloudflare-mod');
 		
-		// Basic security: validate webhook secret if configured
 		const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
 		if (env.WEBHOOK_SECRET && secret !== env.WEBHOOK_SECRET) {
 			return new Response('Unauthorized', { status: 403 });
@@ -148,4 +147,59 @@ export default {
 
 		return new Response('Bot is running safely at edge.', { status: 200 });
 	},
+
+	// Background Cron Trigger: Auto-checks pending jobs and notifies users without requiring manual polling
+	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+		const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+		
+		try {
+			const { results: pendingJobs } = await env.DB.prepare(
+				"SELECT * FROM crawl_jobs WHERE status IN ('queued', 'running')"
+			).all();
+
+			if (!pendingJobs || pendingJobs.length === 0) return;
+
+			for (const job of pendingJobs) {
+				const cfResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/browser-rendering/crawl/${job.job_id}`, {
+					method: 'GET',
+					headers: { 'Authorization': `Bearer ${env.CF_API_TOKEN}` }
+				});
+
+				const result: any = await cfResponse.json();
+				if (!result.success) continue;
+
+				const jobStatus = result.result.status;
+				if (jobStatus === job.status) continue; 
+
+				// State changed, update DB
+				await env.DB.prepare('UPDATE crawl_jobs SET status = ? WHERE job_id = ?').bind(jobStatus, job.job_id).run();
+
+				if (jobStatus === 'completed') {
+					const records = result.result.records || [];
+					let aggregatedMarkdown = '';
+					
+					records.forEach((record: any) => {
+						if (record.status === 'completed' && record.markdown) {
+							aggregatedMarkdown += `\n\n\n\n${record.markdown}`;
+						}
+					});
+
+					if (aggregatedMarkdown) {
+						const fileBuffer = new TextEncoder().encode(aggregatedMarkdown);
+						await bot.api.sendDocument(
+							job.chat_id as number, 
+							new InputFile(fileBuffer, `scraped_data_${(job.job_id as string).substring(0, 5)}.md`),
+							{ caption: `✅ আপনার ক্রলটি সফলভাবে সম্পন্ন হয়েছে! (${records.length} পেজ)` }
+						);
+					} else {
+						await bot.api.sendMessage(job.chat_id as number, `⚠️ আপনার ক্রলটি (<code>${job.job_id}</code>) সম্পন্ন হয়েছে কিন্তু কোনো কন্টেন্ট এক্সট্রাক্ট করা যায়নি।`, { parse_mode: 'HTML' });
+					}
+				} else if (['errored', 'cancelled_due_to_limits', 'cancelled_due_to_timeout'].includes(jobStatus)) {
+					await bot.api.sendMessage(job.chat_id as number, `❌ আপনার ক্রলটি (<code>${job.job_id}</code>) ব্যর্থ হয়েছে। কারণ: ${jobStatus}`, { parse_mode: 'HTML' });
+				}
+			}
+		} catch (error) {
+			console.error("Scheduled task error:", error);
+		}
+	}
 };
